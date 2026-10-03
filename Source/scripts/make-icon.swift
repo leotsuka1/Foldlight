@@ -1,0 +1,21 @@
+import AppKit
+
+let image = NSImage(size: NSSize(width: 1024, height: 1024))
+image.lockFocus()
+let outer = NSBezierPath(roundedRect: NSRect(x: 50, y: 50, width: 924, height: 924), xRadius: 205, yRadius: 205)
+NSGradient(colors: [NSColor(red: 0.05, green: 0.11, blue: 0.12, alpha: 1), NSColor(red: 0.15, green: 0.23, blue: 0.24, alpha: 1)])!.draw(in: outer, angle: 65)
+let back = NSBezierPath()
+back.move(to: NSPoint(x: 270, y: 315)); back.line(to: NSPoint(x: 720, y: 315))
+back.line(to: NSPoint(x: 640, y: 732)); back.line(to: NSPoint(x: 350, y: 732)); back.close()
+NSGradient(colors: [NSColor(red: 0.33, green: 0.69, blue: 0.62, alpha: 1), NSColor(red: 0.71, green: 0.97, blue: 0.84, alpha: 1)])!.draw(in: back, angle: 90)
+let front = NSBezierPath()
+front.move(to: NSPoint(x: 270, y: 315)); front.line(to: NSPoint(x: 720, y: 315))
+front.line(to: NSPoint(x: 792, y: 235)); front.line(to: NSPoint(x: 200, y: 235)); front.close()
+NSColor(red: 0.28, green: 0.56, blue: 0.52, alpha: 1).setFill(); front.fill()
+let hinge = NSBezierPath(); hinge.move(to: NSPoint(x: 278, y: 315)); hinge.line(to: NSPoint(x: 712, y: 315))
+hinge.lineWidth = 6; NSColor.white.withAlphaComponent(0.45).setStroke(); hinge.stroke()
+let fold = NSBezierPath(); fold.move(to: NSPoint(x: 495, y: 316)); fold.line(to: NSPoint(x: 495, y: 723))
+fold.lineWidth = 3; NSColor.white.withAlphaComponent(0.18).setStroke(); fold.stroke()
+image.unlockFocus()
+let bitmap = NSBitmapImageRep(data: image.tiffRepresentation!)!
+try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
