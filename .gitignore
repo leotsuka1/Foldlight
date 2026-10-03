@@ -1,0 +1,8 @@
+.DS_Store
+.build/
+Source/.build/
+*.app/
+*.dSYM/
+*.zip
+.swiftpm/
+Preview/Animation.mp4
