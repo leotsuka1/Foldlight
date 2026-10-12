@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.0
+
+- Blend three blur radii for a smoother increase in softness across the fold.
+- Add gentle speed-dependent blur and quieter glass reflections.
+- Render blur layers at half resolution while keeping the sharp desktop at native Retina resolution.
+- Follow supported built-in display refresh rates up to 120 Hz for lid sampling and capture.
+- Throttle settings readout updates separately from rendering and limit queued GPU frames.
+- Use a minimum-jerk easing curve in the sample preview.
+- Keep the 1.1.1 capture-loop exclusion fix.
+
 ## 1.1.1
 
 - Fix recursive desktop capture when the settings window is closed.
