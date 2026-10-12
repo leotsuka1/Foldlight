@@ -48,7 +48,14 @@ enum Validation {
             previous = value
         }
         try check(FoldMotion.preview(at: 0) == 0 && FoldMotion.preview(at: 8) == 0, "Preview ends open")
-        try check(FoldMotion.preview(at: 3) == 0.93, "Preview pauses at closed position")
+        try check(FoldMotion.preview(at: 3) == 0.97, "Preview pauses at closed position")
+        for time in [0.0, 0.55, 2.95, 3.0, 3.5, 6.4, 8.0] {
+            try check(abs(FoldMotion.previewVelocity(at: time)) < 1e-10, "Preview rests smoothly at each boundary")
+        }
+        for time in stride(from: 0.6, through: 6.3, by: 0.05) {
+            let derivative = (FoldMotion.preview(at: time + 0.00001) - FoldMotion.preview(at: time - 0.00001)) / 0.00002
+            try check(abs(derivative - FoldMotion.previewVelocity(at: time)) < 1e-6, "Exposure follows actual preview speed")
+        }
         print("PASS: smooth motion at different frame rates")
         let renderer = FoldRenderer()
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 64, height: 64, mipmapped: false)
@@ -109,5 +116,53 @@ enum Validation {
             try check(closed[upper] < 4, "Late closure stays behind the hinge")
         }
         print("PASS: source restoration, live blur refresh, and final closure")
+        try verifyOptics(renderer, check: check)
+    }
+
+    private static func verifyOptics(_ renderer: FoldRenderer, check: (Bool, String) throws -> Void) throws {
+        let width = 1280, height = 800
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
+            width: width, height: height, mipmapped: false)
+        descriptor.storageMode = .shared; descriptor.usage = [.shaderRead, .renderTarget]
+        guard let source = renderer.device.makeTexture(descriptor: descriptor),
+              let output = renderer.device.makeTexture(descriptor: descriptor) else {
+            throw Failure(description: "Optical test textures unavailable")
+        }
+        var pattern = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height { for x in 0..<width {
+            let shade: UInt8 = (x / 4 + y / 4) % 2 == 0 ? 40 : 220
+            let offset = (y * width + x) * 4
+            pattern[offset] = shade; pattern[offset + 1] = shade; pattern[offset + 2] = shade
+        } }
+        source.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
+                       withBytes: pattern, bytesPerRow: width * 4)
+        renderer.texture = source
+        func render(progress: Float, softness: Float, motion: Float = 0) throws -> [UInt8] {
+            renderer.progress = progress; renderer.softness = softness; renderer.motion = motion
+            guard let command = renderer.queue.makeCommandBuffer() else { throw Failure(description: "Optical test command unavailable") }
+            renderer.encode(to: output, command: command); command.commit(); command.waitUntilCompleted()
+            try check(command.status == .completed, "Optical render completes")
+            var data = [UInt8](repeating: 0, count: pattern.count)
+            output.getBytes(&data, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+            return data
+        }
+        let open = try render(progress: 0, softness: 1.5, motion: 1)
+        try check(zip(open, pattern).allSatisfy { abs(Int($0.0) - Int($0.1)) <= 1 }, "Native sharp pixels survive maximum softness when open")
+        func detail(_ data: [UInt8]) -> Int {
+            var energy = 0
+            for y in 420..<600 { for x in 400..<800 {
+                let index = (y * width + x) * 4
+                energy += abs(Int(data[index]) - Int(data[index + 4]))
+            } }
+            return energy
+        }
+        let clear = try render(progress: 0.5, softness: 0)
+        let soft = try render(progress: 0.5, softness: 0.95)
+        let softer = try render(progress: 0.5, softness: 1.5)
+        try check(detail(soft) < detail(clear) / 3, "Progressive blur removes fine detail")
+        try check(detail(softer) <= detail(soft), "Softness control increases blur monotonically")
+        let moving = try render(progress: 0.5, softness: 0.95, motion: 1)
+        try check(detail(moving) <= detail(soft), "Motion exposure softens rather than sharpens")
+        print("PASS: progressive optical blur, motion exposure, and native sharp endpoint")
     }
 }
