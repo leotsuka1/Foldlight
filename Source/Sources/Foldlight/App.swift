@@ -24,6 +24,10 @@ final class FoldController: NSObject, ObservableObject {
     private var timer: Timer?
     private var displayLink: CADisplayLink?
     private var nextSensorRead = 0.0
+    private var sensorInterval = 1.0 / 60
+    private var sensorQueue = DispatchQueue(label: "Foldlight.lid", qos: .userInteractive)
+    private var measuredAngle: Double?
+    private var nextAnglePublication = 0.0
     private var reading = false
     private var lastReading = ProcessInfo.processInfo.systemUptime
     private var lastTick = ProcessInfo.processInfo.systemUptime
@@ -45,7 +49,7 @@ final class FoldController: NSObject, ObservableObject {
         let defaults = UserDefaults.standard
         enabled = defaults.object(forKey: "enabled") == nil ? true : defaults.bool(forKey: "enabled")
         threshold = defaults.object(forKey: "threshold") == nil ? 100 : min(125, max(65, defaults.double(forKey: "threshold")))
-        softness = defaults.object(forKey: "softness") == nil ? 0.85 : min(1.5, max(0, defaults.double(forKey: "softness")))
+        softness = defaults.object(forKey: "softness") == nil ? 0.95 : min(1.5, max(0, defaults.double(forKey: "softness")))
         super.init()
         capture.onFailure = { [weak self] error in
             guard let self else { return }
@@ -86,6 +90,7 @@ final class FoldController: NSObject, ObservableObject {
             overlay = OverlayWindow(screen: screen, renderer: renderer); displayID = number.uint32Value
             let link = screen.displayLink(target: self, selector: #selector(displayFrame(_:)))
             let maximum = Float(screen.maximumFramesPerSecond)
+            sensorInterval = 1 / Double(min(120, max(60, maximum)))
             link.preferredFrameRateRange = CAFrameRateRange(minimum: min(60, maximum), maximum: maximum, preferred: maximum)
             link.isPaused = true; link.add(to: .main, forMode: .common); displayLink = link
         }
@@ -93,7 +98,7 @@ final class FoldController: NSObject, ObservableObject {
     }
 
     private func hide() {
-        overlay?.orderOut(nil); smoothed = 0; motion.reset(); renderer.progress = 0
+        overlay?.orderOut(nil); smoothed = 0; motion.reset(); renderer.progress = 0; renderer.motion = 0
         presentationTime = 0
         displayLink?.isPaused = true
     }
@@ -130,7 +135,8 @@ final class FoldController: NSObject, ObservableObject {
                 guard let self else { return }
                 defer { self.transition = false }
                 do {
-                    try await self.capture.start(displayID: displayID, excludingWindowIDs: [windowID])
+                    try await self.capture.start(displayID: displayID, excludingWindowIDs: [windowID],
+                                                 frameRate: Int((1 / self.sensorInterval).rounded()))
                     self.captureStarted = ProcessInfo.processInfo.systemUptime
                 } catch {
                     self.message = "Unable to start desktop folding. \(error.localizedDescription)"
@@ -154,19 +160,26 @@ final class FoldController: NSObject, ObservableObject {
         let delta = min(0.1, now - lastTick); lastTick = now
         if !reading && !sleeping && now >= nextSensorRead {
             reading = true
-            nextSensorRead = now + 1 / 60
-            DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+            nextSensorRead = now + sensorInterval
+            sensorQueue.async { [weak self] in
                 guard let self else { return }
                 let value = self.sensor.angle()
                 DispatchQueue.main.async {
                     self.reading = false
                     if let value {
                         let timestamp = ProcessInfo.processInfo.systemUptime
-                        if let previous = self.angle, value < previous - 0.25 { self.lastClosingMovement = timestamp }
-                        if self.angle != value { self.angle = value }
+                        if let previous = self.measuredAngle, value < previous - 0.25 { self.lastClosingMovement = timestamp }
+                        self.measuredAngle = value
+                        // Settings updates need not rebuild SwiftUI for every sensor sample.
+                        if timestamp >= self.nextAnglePublication {
+                            if self.angle != value { self.angle = value }
+                            self.nextAnglePublication = timestamp + 0.1
+                        }
                         self.lastReading = timestamp
                     }
-                    else if ProcessInfo.processInfo.systemUptime - self.lastReading > 0.5 { self.angle = nil }
+                    else if ProcessInfo.processInfo.systemUptime - self.lastReading > 0.5 {
+                        self.measuredAngle = nil; self.angle = nil
+                    }
                 }
             }
         }
@@ -181,38 +194,41 @@ final class FoldController: NSObject, ObservableObject {
             let t = now - start
             if t >= FoldMotion.previewDuration { stopPreview(); return }
             renderer.progress = Float(FoldMotion.preview(at: t)); renderer.softness = Float(softness)
+            renderer.motion = Float(min(1, abs(FoldMotion.previewVelocity(at: t)) * 0.55))
             displayLink?.isPaused = false
-            overlay?.reveal()
             overlay?.redraw()
+            overlay?.reveal()
             setCapture(wanted: false, now: now)
             return
         }
         guard enabled, permission, prepareOverlay() else {
             hide(); setCapture(wanted: false, now: now); return
         }
-        let target = angle.map { FoldMath.progress(angle: $0, threshold: threshold) } ?? 0
-        if let angle, angle < threshold || (angle < threshold + 18 && now - lastClosingMovement < 0.5) {
+        let target = measuredAngle.map { FoldMath.progress(angle: $0, threshold: threshold) } ?? 0
+        if let angle = measuredAngle, angle < threshold || (angle < threshold + 18 && now - lastClosingMovement < 0.5) {
             warmUntil = now + 0.65
         }
         let wanted = now < warmUntil || smoothed > 0.0001
         displayLink?.isPaused = !wanted
         setCapture(wanted: wanted, now: now)
-        if let frame = capture.latest() { renderer.update(frame) }
-        if capture.running, capture.latest() == nil, let started = captureStarted, now - started > 3 {
+        let latestFrame = capture.latest()
+        if let frame = latestFrame { renderer.update(frame) }
+        if capture.running, latestFrame == nil, let started = captureStarted, now - started > 3 {
             message = "No desktop frames arrived. Check screen recording access and reopen Foldlight."
             enabled = false; hide(); return
         }
-        let hasFrame = capture.running && capture.latest() != nil
+        let hasFrame = capture.running && latestFrame != nil
         if hasFrame && !firstDesktopFrame { motion.reset(); presentationTime = now; firstDesktopFrame = true }
         if !hasFrame { firstDesktopFrame = false }
         smoothed = motion.advance(to: hasFrame ? target : 0, delta: delta)
         // Keep an asynchronous capture startup from appearing as a sudden crease.
-        let arrival = min(1, max(0, (now - presentationTime) / 0.16))
-        let ease = arrival * arrival * (3 - 2 * arrival)
+        let arrival = min(1, max(0, (now - presentationTime) / 0.18))
+        let ease = arrival * arrival * arrival * (10 + arrival * (-15 + 6 * arrival))
         renderer.progress = Float(smoothed * ease); renderer.softness = Float(softness)
+        renderer.motion = Float(min(1, abs(motion.velocity) * 0.55))
         if smoothed > 0.0001 && hasFrame {
-            overlay?.reveal()
             overlay?.redraw()
+            overlay?.reveal()
         } else if capture.running || !transition { overlay?.orderOut(nil) }
     }
 
