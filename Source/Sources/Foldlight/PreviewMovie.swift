@@ -22,7 +22,7 @@ enum PreviewMovie {
         defer { if !finished { try? FileManager.default.removeItem(at: temporary) } }
 
         let renderer = FoldRenderer()
-        renderer.softness = 0.85
+        renderer.softness = 0.95
         renderer.texture = DemoDesktop.texture(device: renderer.device)
         guard renderer.texture != nil else { throw Failure(description: "Unable to create the preview desktop.") }
 
@@ -85,7 +85,9 @@ enum PreviewMovie {
                           let command = renderer.queue.makeCommandBuffer() else {
                         throw Failure(description: "Unable to prepare a preview frame for Metal.")
                     }
-                    renderer.progress = Float(FoldMotion.preview(at: Double(index) / Double(framesPerSecond)))
+                    let time = Double(index) / Double(framesPerSecond)
+                    renderer.progress = Float(FoldMotion.preview(at: time))
+                    renderer.motion = Float(min(1, abs(FoldMotion.previewVelocity(at: time)) * 0.55))
                     renderer.encode(to: output, command: command)
                     command.commit()
                     command.waitUntilCompleted()
