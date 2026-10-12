@@ -10,7 +10,7 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private(set) var running = false
     var onFailure: ((String) -> Void)?
 
-    func start(displayID: CGDirectDisplayID, excludingWindowIDs: Set<CGWindowID>) async throws {
+    func start(displayID: CGDirectDisplayID, excludingWindowIDs: Set<CGWindowID>, frameRate: Int = 60) async throws {
         // Include offscreen windows: a menu bar app need not have an open settings window.
         var content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         for _ in 0..<3 where !excludingWindowIDs.isSubset(of: Set(content.windows.map(\.windowID))) {
@@ -31,7 +31,7 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         config.width = CGDisplayPixelsWide(displayID)
         config.height = CGDisplayPixelsHigh(displayID)
         config.pixelFormat = kCVPixelFormatType_32BGRA
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(min(120, max(30, frameRate))))
         config.queueDepth = 3; config.showsCursor = true; config.capturesAudio = false
         let newStream = SCStream(filter: filter, configuration: config, delegate: self)
         try newStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "Foldlight.capture"))
